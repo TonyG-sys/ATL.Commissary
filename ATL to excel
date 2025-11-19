@@ -1,0 +1,140 @@
+#PART 2: Paste .txt document onto excel 
+
+import os
+import re
+import xlwings as xw
+
+# --- Paths ---
+folder_path = r"C:\Users\TGonzalezGomez\Documents\Extracted_RecipesForAmericanSummer2"
+template_path = r"C:\Users\TGonzalezGomez\OneDrive - SODEXO\Documents\Master Recipe Development Templates delted.xlsx"
+output_path = "SodynamicAmericanSummerBuffet.xlsx"
+
+# --- Helpers ---
+HEADER_PATTERN = re.compile(
+    r'^\s*(recipe name|yield|procedure|chef(?:\s*created\s*by)?|created by|chef name)\s*:?\s*(.*)$',
+    re.IGNORECASE
+)
+
+def sanitize_sheet_name(name: str, existing: set) -> str:
+    base = re.sub(r'[\\/*?:\[\]]', '', name)[:31] or "Sheet"
+    cand = base
+    i = 1
+    while cand in existing:
+        suffix = f"_{i}"
+        cand = (base[:31 - len(suffix)] + suffix)
+        i += 1
+    existing.add(cand)
+    return cand
+
+def _strip_bullet(s: str) -> str:
+    return re.sub(r'^\s*[-•]\s*', '', s).strip()
+
+def parse_recipe(text_lines):
+    title = ""
+    recipe_yield = ""
+    chef = ""
+    procedure = ""
+
+    # First pass: grab any same-line values
+    for line in text_lines:
+        m = HEADER_PATTERN.match(line)
+        if not m:
+            continue
+        key, rest = m.group(1).lower(), m.group(2).strip()
+        if key == "recipe name" and rest and not title:
+            title = rest
+        elif key in ("chef", "chef created by", "created by", "chef name"):
+            if rest and not chef:
+                chef = rest
+        elif key == "yield" and rest and not recipe_yield:
+            recipe_yield = rest
+
+    # Block parsing for multi-line content
+    section = None
+    buf = []
+
+    def flush(sec):
+        nonlocal title, recipe_yield, procedure, chef
+        content = "\n".join(s.rstrip() for s in buf).strip()
+        if not content:
+            return
+        if sec == "recipe name" and not title:
+            title = content
+        elif sec == "yield" and not recipe_yield:
+            recipe_yield = content
+        elif sec == "procedure" and not procedure:
+            procedure = content
+        elif sec in ("chef", "chef created by", "created by", "chef name") and not chef:
+            names = [ _strip_bullet(x) for x in content.splitlines() if x.strip() ]
+            chef = "; ".join(names)
+
+    for raw in text_lines:
+        line = raw.rstrip("\n")
+        m = HEADER_PATTERN.match(line)
+        if m:
+            if section is not None:
+                flush(section)
+            section = m.group(1).lower()
+            rest = m.group(2).strip()
+            buf = [rest] if rest else []
+        else:
+            if section in {"recipe name", "yield", "procedure", "chef", "chef created by", "created by", "chef name"}:
+                if re.match(r'^\s*(==+\s*start|==+\s*end)\s*[:\-]*', line, re.IGNORECASE):
+                    continue
+                buf.append(line)
+
+    if section is not None:
+        flush(section)
+
+    # Fallbacks (pick the chef fallback you prefer)
+    title = title or "Untitled"
+    chef = chef or "Chef blas/ Commissary ATL"  # or "No chef found."
+    recipe_yield = recipe_yield or "No yield found."
+    procedure = procedure or "No procedure found."
+    return title, recipe_yield, chef, procedure
+
+# --- Main ---
+txt_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".txt")]
+
+app = xw.App(visible=False)
+app.display_alerts = False
+app.screen_updating = False
+try:
+    wb = app.books.open(template_path)
+    template_sheet = wb.sheets[0]
+    used_names = {s.name for s in wb.sheets}
+
+    for txt_file in txt_files:
+        print(f"Processing file: {txt_file}")
+        file_path = os.path.join(folder_path, txt_file)
+        # Your extractor writes UTF-8; use that (still safe with errors='replace')
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+
+        title, recipe_yield, chef, procedure = parse_recipe(lines)
+
+        safe_title = sanitize_sheet_name(title, used_names)
+        print(f"Creating sheet for: {safe_title}")
+        new_sheet = template_sheet.copy(after=wb.sheets[-1])
+        new_sheet.name = safe_title
+
+        # Header / meta
+        new_sheet.range("E3:N3").value = title
+        new_sheet.range("E1:J1").value = chef
+        new_sheet.range("E2:J2").value = chef
+
+        # Procedure lines → M6:N17 (up to 12 lines)
+        proc_lines = [ln.strip() for ln in procedure.splitlines() if ln.strip()]
+        rows = 12
+        block = [[proc_lines[i] if i < len(proc_lines) else "",
+                  proc_lines[i] if i < len(proc_lines) else ""] for i in range(rows)]
+        new_sheet.range("M6:N17").value = block
+
+        # Yield
+        new_sheet.range("N34").value = recipe_yield
+
+    template_sheet.delete()
+    wb.save(output_path)
+    print(f"Excel file created and saved as '{output_path}' with {len(txt_files)} sheets.")
+finally:
+    app.quit()
