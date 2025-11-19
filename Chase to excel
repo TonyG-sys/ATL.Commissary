@@ -1,0 +1,139 @@
+# PART 2: Chase LGA Paste .txt document extracted information onto excel
+import os
+import re
+import xlwings as xw
+
+# Define paths
+folder_path = r"C:\Users\TGonzalezGomez\extracted_recipes19"
+template_path = r"C:\Users\TGonzalezGomez\OneDrive - SODEXO\Documents\Master Recipe Development Templates delted.xlsx"
+output_path = "WinterRecipesLGAChaseFinal.xlsx"
+
+# Get all .txt files in the folder
+txt_files = [f for f in os.listdir(folder_path) if f.startswith("document_") and f.endswith(".txt")]
+
+INVALID_CHARS = r'[\\/*?:\[\]:]'  # Excel-forbidden; keep colon too
+
+def make_base_title(title: str, txt_filename: str) -> str:
+    """Prefer parsed title; if missing/garbage, use the TXT file stem."""
+    base = (title or "").strip()
+    if not base or base in {"-", "_", ".", "--"}:
+        base = os.path.splitext(os.path.basename(txt_filename))[0]
+    base = re.sub(INVALID_CHARS, "", base).strip()
+    base = re.sub(r"\s{2,}", " ", base)
+    return (base[:31] or "Untitled")
+
+def unique_sheet_name(base: str, wb) -> str:
+    """Ensure name is unique in workbook (case-insensitive), suffixing (2), (3), ... as needed."""
+    existing = {s.name.lower() for s in wb.sheets}
+    if base.lower() not in existing:
+        return base
+    i = 2
+    while True:
+        suffix = f" ({i})"
+        cand = (base[: 31 - len(suffix)] + suffix).rstrip()
+        if cand.lower() not in existing:
+            return cand
+        i += 1
+
+# Start Excel app
+app = xw.App(visible=False)
+created = 0
+try:
+    wb = app.books.open(template_path)
+    template_sheet = wb.sheets[0]
+
+    for txt_file in txt_files:
+        print(f"Processing file: {txt_file}")
+        file_path = os.path.join(folder_path, txt_file)
+        with open(file_path, "r", encoding="windows-1252", errors="replace") as f:
+            lines = f.readlines()
+
+        # Extract title
+        title = ""
+        for line in lines:
+            if line.strip().lower().startswith("title:"):
+                title = line.split(":", 1)[1].strip()
+                break
+
+        if not title:
+            print(f"No title found in {txt_file}, skipping.")
+            continue
+
+        # Extract ingredients
+        ingredients = ""
+        capture = False
+        for line in lines:
+            if line.strip().lower().startswith("ingredients:"):
+                capture = True
+                continue
+            if capture:
+                if line.strip().lower().startswith("procedure:"):
+                    break
+                ingredients += line.strip() + "\n"
+        ingredients = ingredients.strip() if ingredients else "No ingredients found."
+
+        # Extract procedure
+        procedure = ""
+        capture = False
+        for line in lines:
+            if line.strip().lower().startswith("procedure:"):
+                capture = True
+                continue
+            if capture:
+                procedure += line.strip() + "\n"
+        procedure = procedure.strip() if procedure else "No procedure found."
+
+        # Build a safe, unique sheet name
+        base = make_base_title(title, txt_file)
+        safe_title = unique_sheet_name(base, wb)
+
+        print(f"Creating sheet for: {safe_title}")
+        new_sheet = template_sheet.copy(after=wb.sheets[-1])
+        new_sheet.name = safe_title
+        created += 1
+
+        # Write values (tip: if these are merged, writing to the top-left cell is enough)
+        print("Inserting title into C3:H3...")
+        new_sheet.range("E3:N3").value = title
+        new_sheet.range("E1:J1").value = "Chef Scott/ Chase LGA"
+        new_sheet.range("E2:J2").value = "Chef Scott/Chase LGA"
+
+        # Procedure and ingredients — you can write once if the range is merged
+        new_sheet.range("M6:N6").value = procedure
+        new_sheet.range("M7:N7").value = procedure
+        new_sheet.range("M8:N8").value = procedure
+        new_sheet.range("M9:N9").value = procedure
+        new_sheet.range("M10:N10").value = procedure
+        new_sheet.range("M11:N11").value = procedure
+        new_sheet.range("M12:N12").value = procedure
+        new_sheet.range("M13:N13").value = procedure
+        new_sheet.range("M14:N14").value = procedure
+        new_sheet.range("M15:N15").value = procedure
+        new_sheet.range("M16:N16").value = procedure
+        new_sheet.range("M17:N17").value = procedure
+
+        new_sheet.range("M22:N22").value = ingredients
+        new_sheet.range("M23:N23").value = ingredients
+        new_sheet.range("M24:N24").value = ingredients
+        new_sheet.range("M25:N25").value = ingredients
+        new_sheet.range("M26:N26").value = ingredients
+        new_sheet.range("M27:N27").value = ingredients
+        new_sheet.range("M28:N28").value = ingredients
+        new_sheet.range("M29:N29").value = ingredients
+        new_sheet.range("M30:N30").value = ingredients
+        new_sheet.range("M31:N31").value = ingredients
+        new_sheet.range("M32:N32").value = ingredients
+
+    # Only delete the template if we actually created sheets and at least one other visible sheet exists
+    visible_sheets = [s for s in wb.sheets if s.visible]
+    if created > 0 and len(visible_sheets) > 1:
+        template_sheet.delete()
+    else:
+        print("Keeping the template sheet to avoid deleting the last visible worksheet.")
+
+    # Save and close
+    wb.save(output_path)
+    print(f"Excel file created and saved as '{output_path}' with {created} sheets.")
+
+finally:
+    app.quit()
