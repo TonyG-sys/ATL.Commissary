@@ -1,0 +1,105 @@
+#PART 1: Original Meez recipe book onto a folder with seperate recipes basede on patterns and extracts information needed such as ingredients, procedures, and recipe title
+import fitz  # PyMuPDF
+import re
+import os
+
+# === CONFIGURATION ===
+pdf_path    = r"C:\Users\TGonzalezGomez\OneDrive - SODEXO\Chase Template Program\LGA-25-Summer---Recipe-Book---meez_2025-06-12-18-54-34.pdf"
+output_dir  = "extracted_recipes5"
+
+# Create output directory if it doesn't exist
+os.makedirs(output_dir, exist_ok=True)
+
+# Load PDF and concatenate all text
+with fitz.open(pdf_path) as doc:
+    full_text = "".join(page.get_text() for page in doc)
+
+# Split into recipe blocks on "SHELF LIFE:" header
+blocks = re.split(
+    r'(?=^\s*SHELF LIFE:)',
+    full_text,
+    flags=re.MULTILINE | re.IGNORECASE
+)
+
+recipes = []
+for block in blocks:
+    lines = block.splitlines()
+    title = ""
+    ingredients = []
+    procedure = []
+    state = None
+    skip_page = False
+
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+
+        # Detect recipe start and await title
+        if re.match(r'^SHELF LIFE:', line, re.IGNORECASE):
+            state = 'await_title'
+            continue
+
+        # Capture title: next non-"Ingredients" line after header
+        if state == 'await_title':
+            if line.lower() != '-':
+                title = line
+                state = None
+            continue
+
+        # Ingredients section start
+        if line.lower() == 'ingredients':
+            state = 'ingredients'
+            continue
+
+        # Procedure/Prep Method section start
+        if line.lower() in ('prep method', 'procedure'):
+            state = 'procedure'
+            continue
+
+        # End of procedure sentinel
+        if 'chase sapphire by sdx' in line.lower():
+            break
+
+        # Skip page-break noise in procedure
+        if state == 'procedure':
+            if '---page' in line.lower():
+                skip_page = True
+                continue
+            if skip_page and 'meez' in line.lower():
+                skip_page = False
+            if skip_page:
+                continue
+
+        # Collect content based on current state
+        if state == 'ingredients':
+            ingredients.append(line)
+        elif state == 'procedure':
+            procedure.append(line)
+
+    # Only store recipes with a detected title
+    if title:
+        recipes.append({
+            'title': title,
+            'ingredients': ingredients,
+            'procedure': procedure
+        })
+
+# Write each recipe to a formatted text file
+for idx, r in enumerate(recipes, start=1):
+    fname = f"recipe_{idx}.txt"
+    path = os.path.join(output_dir, fname)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(f"Title: {r['title']}\n\n")
+        if r['ingredients']:
+            f.write("Ingredients:\n")
+            for ing in r['ingredients']:
+                f.write(f"- {ing}\n")
+            f.write("\n")
+        if r['procedure']:
+            f.write("Procedure:\n")
+            for step in r['procedure']:
+                f.write(f"{step}\n")
+    print(f"Wrote: {path}")
+
+print(f"Extracted {len(recipes)} recipes.")
