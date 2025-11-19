@@ -1,0 +1,176 @@
+#PART 1: ATL original recipe information is extracted and stored in a .txt document 
+import os
+from openpyxl import load_workbook
+
+# === Config ===
+excel_path = r"C:\Users\TGonzalezGomez\OneDrive - SODEXO\Downloads\AA AC Recipes SUMMER 2025 - SOURCE OF TRUTH.xlsx"
+output_dir = r"C:\Users\TGonzalezGomez\Documents\Extracted_RecipesForAmericanADmiralClub"
+os.makedirs(output_dir, exist_ok=True)
+
+def norm(s):
+    if s is None:
+        return ""
+    return str(s).replace("\xa0", " ").strip().lower()
+
+def contains_all(text, *words):
+    return all(w in text for w in words)
+
+def is_yield_label(text: str) -> bool:
+    return ("yield" in text) 
+
+def is_serving_weight_vol_label(text: str) -> bool:
+    return contains_all(text, "serving", "weight", "volume")
+
+wb = load_workbook(excel_path, data_only=True)
+
+for sheet in wb.worksheets:
+    sheet_name = sheet.title
+    print(f"Processing: {sheet_name}")
+
+    # --- Recipe name (between 'recipe name' label and the next header-ish cell)
+    capturing_recipe = False
+    recipe_section_done = False
+    recipe_captured_lines = []
+    recipe_name = ""
+
+    # --- Procedure (between 'procedure' and 'chef notes')
+    capturing_proc = False
+    proc_points = []
+    proc_col = None  # remember which column holds the steps
+
+    def is_label(text, *needles):
+        t = norm(text)
+        return all(n in t for n in needles)
+
+
+    # --- Chef created by (between 'chef created by' and 'date')
+    capturing_chef = False
+    chef_points = []
+
+    # --- Yield (between 'yield' and 'serving weight / volume')
+    capturing_yield = False
+    yield_done = False
+    yield_items = []
+
+    for row in sheet.iter_rows(values_only=False):
+        for cell in row:
+            raw = cell.value
+            val = "" if raw is None else str(raw).strip()
+            nval = norm(raw)
+
+            # ====== Capture 1: Recipe Name .. (end on next header like 'recipe number')
+            if (not capturing_recipe and not recipe_section_done
+                and contains_all(nval, "recipe", "name")):
+                capturing_recipe = True
+                recipe_captured_lines.append(f"== Start Capture for {sheet_name} ==")
+
+                # Try the cell to the right for the actual name
+                right = sheet.cell(row=cell.row, column=cell.column + 1)
+                right_val = "" if right.value is None else str(right.value).strip()
+                if right_val and not recipe_name:
+                    recipe_name = right_val
+                continue
+
+            if capturing_recipe and (contains_all(nval, "recipe", "number")
+                                     or contains_all(nval, "serving", "weight", "volume")
+                                     or nval.startswith("yield")
+                                     or nval.startswith("procedure")):
+                capturing_recipe = False
+                recipe_section_done = True
+                recipe_captured_lines.append("Chef Notes: (write any additional recipe info, variations, substitutions, etc. below)")
+            elif capturing_recipe:
+                if not recipe_name and val:
+                    recipe_name = val
+                recipe_captured_lines.append(f"{cell.coordinate}: {val}")
+
+            # ====== Capture 2: Procedure .. Chef Notes
+            # Start capturing when we see any cell that contains the word 'procedure'
+            if not capturing_proc and is_label(raw, "procedure"):
+                capturing_proc = True
+                proc_col = cell.column  # capture only from this column
+                continue
+
+# Stop capturing when we hit 'chef notes' in any form
+            if capturing_proc and is_label(raw, "chef", "notes"):
+                capturing_proc = False
+                proc_col = None
+                continue
+
+# While capturing, append only the text from the procedure column
+            if capturing_proc and cell.column == proc_col and val:
+    # Some sheets put multiple steps in one cell with line breaks; split them
+                for line in str(val).splitlines():
+                    step = line.strip().lstrip("-•").strip()
+                    if step:
+            # de-duplicate case-insensitively
+                        if not any(step.lower() == p.lower() for p in proc_points):
+                            proc_points.append(step)
+
+            # ====== Capture 2.5: Chef created by .. Date
+            if not capturing_chef and nval.startswith("chef created by"):
+                capturing_chef = True
+                continue
+            if capturing_chef and nval.startswith("date"):
+                capturing_chef = False
+                continue
+            if capturing_chef and val:
+                if val not in chef_points:
+                    chef_points.append(val)
+
+            # ====== Capture 3: Yield .. Serving Weight / Volume
+            if not capturing_yield and not yield_done and is_yield_label(nval):
+                capturing_yield = True
+                # immediate value to the right of the label
+                right2 = sheet.cell(row=cell.row, column=cell.column + 1)
+                right2_val = "" if right2.value is None else str(right2.value).strip()
+                if right2_val:
+                    yield_items.append(right2_val)
+                continue
+
+            if capturing_yield and is_serving_weight_vol_label(nval):
+                capturing_yield = False
+                yield_done = True
+                continue
+
+            if capturing_yield and val:
+                # Avoid relisting the label itself or duplicates
+                if not is_yield_label(nval) and val not in yield_items:
+                    yield_items.append(val)
+
+    # --- Write out (keep all writes inside the 'with' block)
+    if recipe_captured_lines or proc_points or yield_items or chef_points:
+        output_path = os.path.join(output_dir, f"{sheet_name}.txt")
+        with open(output_path, "w", encoding="utf-8") as f:
+            # Header: Recipe name
+            f.write(f"Recipe Name: {recipe_name if recipe_name else 'Not Found'}\n")
+
+            # Yield just under the recipe name
+            if yield_items:
+                f.write("Yield: " + "; ".join(yield_items) + "\n\n")
+            else:
+                f.write("Yield: (Not found)\n\n")
+
+            # Chef Created By
+            f.write("Chef Created By:\n")
+            if chef_points:
+                for c in chef_points:
+                    f.write(f"- {c}\n")
+            else:
+                f.write("- (No chef names found)\n")
+
+            # Original recipe capture block (optional breadcrumbs)
+            if recipe_captured_lines:
+                f.write("\n".join(recipe_captured_lines))
+                f.write("\n\n")
+
+            # Procedure
+            f.write("Procedure:\n")
+            if proc_points:
+                for p in proc_points:
+                    f.write(f"- {p}\n")
+            else:
+                f.write("- (No procedure steps found)\n")
+
+        print(f"Saved: {output_path}")
+    else:
+        print(f"No recipe/procedure/yield data found in: {sheet_name}")
